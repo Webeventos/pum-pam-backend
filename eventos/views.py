@@ -7,11 +7,11 @@ from django.utils.decorators import method_decorator
 from django.views.decorators.csrf import csrf_exempt
 
 from rest_framework import viewsets
-from rest_framework.permissions import AllowAny, IsAuthenticated
+from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
-from .models import Evento, TareaLogistica
-from .serializers import EventoSerializer, TareaSerializer
+from .models import Evento, Novedad, TareaLogistica
+from .serializers import EventoSerializer, NovedadSerializer, TareaSerializer
 
 
 class EventoViewSet(viewsets.ModelViewSet):
@@ -25,9 +25,19 @@ class EventoViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         if self.request.user.is_authenticated:
-            serializer.save(usuario=self.request.user)
+            evento = serializer.save(usuario=self.request.user)
         else:
-            serializer.save()
+            evento = serializer.save()
+        Novedad.objects.create(evento=evento, tipo=Novedad.EVENTO_CREADO)
+
+    def perform_update(self, serializer):
+        cambios = any(
+            getattr(serializer.instance, campo) != valor
+            for campo, valor in serializer.validated_data.items()
+        )
+        evento = serializer.save()
+        if cambios:
+            Novedad.objects.create(evento=evento, tipo=Novedad.EVENTO_EDITADO)
 
 
 class TareaViewSet(viewsets.ModelViewSet):
@@ -38,6 +48,37 @@ class TareaViewSet(viewsets.ModelViewSet):
         if self.request.user.is_authenticated:
             return TareaLogistica.objects.filter(evento__usuario=self.request.user)
         return TareaLogistica.objects.filter(evento__usuario__isnull=True)
+
+    def perform_create(self, serializer):
+        tarea = serializer.save()
+        Novedad.objects.create(
+            evento=tarea.evento,
+            tipo=Novedad.SUBTAREA_AGREGADA,
+            subtarea_titulo=tarea.titulo,
+        )
+
+    def perform_update(self, serializer):
+        estado_anterior = serializer.instance.estado
+        tarea = serializer.save()
+        if estado_anterior != 'HECHO' and tarea.estado == 'HECHO':
+            Novedad.objects.create(
+                evento=tarea.evento,
+                tipo=Novedad.SUBTAREA_COMPLETADA,
+                subtarea_titulo=tarea.titulo,
+            )
+
+
+class NovedadViewSet(viewsets.ReadOnlyModelViewSet):
+    queryset = Novedad.objects.select_related('evento').all()
+    serializer_class = NovedadSerializer
+
+    def get_queryset(self):
+        novedades = Novedad.objects.select_related('evento')
+        if self.request.user.is_authenticated:
+            novedades = novedades.filter(evento__usuario=self.request.user)
+        else:
+            novedades = novedades.filter(evento__usuario__isnull=True)
+        return novedades.order_by('-fecha')[:50]
 
 
 
